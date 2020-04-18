@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+
+import subprocess
+import multiprocessing
+import sys
+
+def run_command( cmd ):
+	shell = subprocess.Popen( cmd, stderr=subprocess.STDOUT, stdout=subprocess.PIPE )
+
+	if shell.wait() != 0:
+		raise OSError(shell.stdout.read().decode())
+
+	return shell.stdout.read().decode()
+
+def get_freq_range():
+	cmd = ("cpufreq-info", "-l")
+	value = run_command(cmd).split(" ")[:2]
+	return int(value[0]), int(value[1])
+
+def get_register():
+	cmd = ("rdmsr", "-u", "0x1FC")
+	return int(run_command(cmd),16)
+
+def set_performance( core, freq ):
+	cmd = ("cpufreq-set", "--cpu", str(core), \
+			"--governor", "performance", \
+			"--max", str(freq))
+	run_command(cmd)
+
+	#os.system( f"cat /sys/devices/system/cpu/cpu{i}/cpufreq/scaling_governor" )
+def set_powersave( core, freq ):
+	cmd = ("cpufreq-set", "--cpu", str(core), \
+			"--governor", "powersave", \
+			"--max", str(freq))
+	run_command(cmd)
+
+def lsmod():
+	cmd = ("lsmod",)
+	lines = run_command(cmd).split('\n')
+	return "msr" in ( i.split(' ')[0] for i in lines )
+
+def modprobe():
+	cmd = ("modprobe", "msr")
+	run_command(cmd)
+
+def set_register( value ):
+	cmd = ("wrmsr", "-a", "0x1FC", str(value))
+	run_command(cmd)
+
+def get_freq( core ):
+	cmd = ("cpufreq-info", "-c", str(core), "-f")
+	value = int(run_command(cmd))
+	return value/1000000
+
+def get_policy( core ):
+	cmd = ("cpufreq-info", "-c", str(core), "-p")
+	value = run_command(cmd).strip().split(" ")[:3]
+	return int(value[0])/1000000, int(value[1])/1000000, value[2]
+
+if __name__ == "__main__":
+	try:
+		mode = sys.argv[1].lower()
+		modes = ("low", "mid", "high", "info")
+		if mode not in modes:
+			print( f"Options are {modes}")
+			sys.exit(1)
+	except IndexError:
+		mode = "mid"
+
+	if mode != "info":
+		# check kernal module
+		msr = lsmod()
+
+		print( f"Kernal module: {'loaded' if msr else 'loading'}" )
+		if not msr:
+			modprobe()
+
+		# check register value
+		setValue = 0x2883676
+		value = get_register()
+
+		print( f"Register     : {'set' if value == setValue else 'setting'}" )
+		if value != setValue:
+			set_register( setValue )
+
+		freqs = get_freq_range()
+		print( f"Min frequency: {freqs[0]}" )
+		print( f"Max frequency: {freqs[1]}" )
+
+		print( "Set core/s   : ", end="" )
+		for i in range( multiprocessing.cpu_count() ):
+			print( f"{i} ", end="" )
+			if mode == "high":
+				set_performance( i, freqs[1] )
+			elif mode == "mid":
+				set_powersave( i, freqs[1] )
+			else:
+				set_powersave( i, freqs[0] )
+		print()
+
+	for i in range( multiprocessing.cpu_count() ):
+		mn, mx, gov = get_policy(i)
+		print( f"Core {i:2}    : {get_freq(i):.2f}  {mn:.2f} -> {mx:.2f}  {gov}")
+
+	sys.exit(0)
